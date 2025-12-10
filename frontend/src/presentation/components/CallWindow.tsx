@@ -1,8 +1,9 @@
-// frontend/src/presentation/components/CallWindow.tsx - VERSIÓN SIMPLIFICADA (SOLO IFRAME)
-import React, { useEffect, useRef, useState } from 'react';
+// frontend/src/presentation/components/CallWindow.tsx - VERSIÓN SIMPLIFICADA (SOLO IFRAME) CON RECONEXIÓN
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { dailyService } from '../../services/dailyService';
 import { ConnectionStatusOverlay } from './ConnectionStatusOverlay';
+import { socketService } from '../../infrastructure/socket/socketService';
 
 interface CallWindowProps {
   roomName: string;
@@ -24,9 +25,12 @@ export const CallWindow: React.FC<CallWindowProps> = ({
   const { user } = useAuthStore();
   const [isLoading, setIsLoading] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('connected');
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [callStartTime] = useState<number>(Date.now());
   const callFrameRef = useRef<HTMLDivElement>(null);
   const isInitialized = useRef(false);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const maxReconnectTime = 30000; // 30 segundos máximo para reconectar
 
   useEffect(() => {
     if (isInitialized.current) {
@@ -135,6 +139,119 @@ export const CallWindow: React.FC<CallWindowProps> = ({
     };
   }, []);
 
+  // 🔥 NUEVO: useEffect para manejar reconexión de Socket durante la llamada
+  useEffect(() => {
+    const socket = socketService.getSocket();
+    
+    if (!socket) {
+      console.log('⚠️ No hay socket disponible para monitorear reconexión');
+      return;
+    }
+
+    console.log('🔌 Configurando listeners de reconexión para la llamada...');
+
+    // Función para iniciar el timeout de reconexión
+    const startReconnectTimeout = () => {
+      // Limpiar timeout anterior si existe
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      
+      // Iniciar nuevo timeout
+      reconnectTimeoutRef.current = setTimeout(() => {
+        console.log('⏱️ Tiempo de reconexión agotado (30s). Finalizando llamada...');
+        setConnectionStatus('disconnected');
+        // Dar tiempo para mostrar el mensaje de desconexión
+        setTimeout(() => {
+          const duration = Math.floor((Date.now() - callStartTime) / 1000);
+          onCallEnd(duration);
+        }, 2000);
+      }, maxReconnectTime);
+    };
+
+    // Handler para desconexión
+    const handleDisconnect = (reason: string) => {
+      console.log('📞❌ Llamada: Socket desconectado -', reason);
+      
+      // Si fue desconexión manual, no mostrar reconectando
+      if (reason === 'io client disconnect') {
+        return;
+      }
+      
+      setConnectionStatus('reconnecting');
+      setReconnectAttempt(1);
+      startReconnectTimeout();
+    };
+
+    // Handler para intentos de reconexión
+    const handleReconnectAttempt = (attempt: number) => {
+      console.log(`📞🔄 Llamada: Intento de reconexión #${attempt}`);
+      setConnectionStatus('reconnecting');
+      setReconnectAttempt(attempt);
+    };
+
+    // Handler para reconexión exitosa
+    const handleReconnect = (attempt: number) => {
+      console.log(`📞✅ Llamada: Reconectado después de ${attempt} intentos`);
+      
+      // Limpiar el timeout de reconexión
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      setConnectionStatus('connected');
+      setReconnectAttempt(0);
+    };
+
+    // Handler para conexión (también cubre reconexión)
+    const handleConnect = () => {
+      console.log('📞✅ Llamada: Socket conectado');
+      
+      // Limpiar el timeout de reconexión
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      setConnectionStatus('connected');
+      setReconnectAttempt(0);
+    };
+
+    // Handler para error de conexión
+    const handleConnectError = (error: Error) => {
+      console.error('📞❌ Llamada: Error de conexión -', error.message);
+      setConnectionStatus('reconnecting');
+      if (reconnectAttempt === 0) {
+        setReconnectAttempt(1);
+        startReconnectTimeout();
+      }
+    };
+
+    // Agregar listeners
+    socket.on('disconnect', handleDisconnect);
+    socket.on('reconnect_attempt', handleReconnectAttempt);
+    socket.on('reconnect', handleReconnect);
+    socket.on('connect', handleConnect);
+    socket.on('connect_error', handleConnectError);
+
+    // Cleanup
+    return () => {
+      console.log('🧹 Limpiando listeners de reconexión de llamada...');
+      socket.off('disconnect', handleDisconnect);
+      socket.off('reconnect_attempt', handleReconnectAttempt);
+      socket.off('reconnect', handleReconnect);
+      socket.off('connect', handleConnect);
+      socket.off('connect_error', handleConnectError);
+      
+      // Limpiar timeout si existe
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+    };
+  }, [callStartTime, onCallEnd, reconnectAttempt]);
+
   const handleEndCall = () => {
     const duration = Math.floor((Date.now() - callStartTime) / 1000);
 
@@ -206,6 +323,7 @@ export const CallWindow: React.FC<CallWindowProps> = ({
         status={connectionStatus}
         isVisible={connectionStatus !== 'connected'}
         timeoutSeconds={30}
+        reconnectAttempt={reconnectAttempt}
       />
 
       {/* Iframe container - Daily.co carga automáticamente aquí */}
