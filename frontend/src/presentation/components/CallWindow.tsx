@@ -1,4 +1,4 @@
-// frontend/src/presentation/components/CallWindow.tsx - VERSIÓN SIMPLIFICADA (SOLO IFRAME) CON RECONEXIÓN
+// frontend/src/presentation/components/CallWindow.tsx - VERSIÓN SIMPLIFICADA (SOLO IFRAME) CON RECONEXIÓN MEJORADA
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { dailyService } from '../../services/dailyService';
@@ -10,7 +10,9 @@ interface CallWindowProps {
   callType: 'audio' | 'video';
   isGroupCall?: boolean;
   displayName?: string;
-  onCallEnd: (duration: number) => void;
+  callId?: number;           // 🔥 NUEVO: ID de la llamada para notificar desconexión
+  contactId?: number;        // 🔥 NUEVO: ID del contacto para enviar mensaje
+  onCallEnd: (duration: number, reason?: 'normal' | 'connection_lost') => void;
   onCallReady?: () => void;
 }
 
@@ -19,6 +21,8 @@ export const CallWindow: React.FC<CallWindowProps> = ({
   callType,
   isGroupCall = false,
   displayName,
+  callId,
+  contactId,
   onCallEnd,
   onCallReady
 }) => {
@@ -30,7 +34,13 @@ export const CallWindow: React.FC<CallWindowProps> = ({
   const callFrameRef = useRef<HTMLDivElement>(null);
   const isInitialized = useRef(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const maxReconnectTime = 30000; // 30 segundos máximo para reconectar
+  const disconnectDelayRef = useRef<NodeJS.Timeout | null>(null);
+  const offlineTimeoutRef = useRef<NodeJS.Timeout | null>(null); // 🔥 NUEVO: Timer para detectar offline por navegador
+  const hasEndedRef = useRef(false); // Para evitar llamar onCallEnd múltiples veces
+  
+  // 🔥 CONFIGURACIÓN DE TIEMPOS
+  const disconnectDelay = 5000;    // 5 segundos antes de mostrar overlay de reconexión
+  const maxReconnectTime = 20000;  // 20 segundos máximo para reconectar después de mostrar overlay
 
   useEffect(() => {
     if (isInitialized.current) {
@@ -139,7 +149,113 @@ export const CallWindow: React.FC<CallWindowProps> = ({
     };
   }, []);
 
-  // 🔥 NUEVO: useEffect para manejar reconexión de Socket durante la llamada
+  // 🔥 NUEVO: useEffect para detectar pérdida de conexión usando navigator.onLine (más confiable)
+  useEffect(() => {
+    // Función para terminar la llamada localmente Y notificar al servidor
+    const forceEndCall = () => {
+      if (hasEndedRef.current) return;
+      hasEndedRef.current = true;
+      
+      console.log('🔴 Forzando cierre de llamada por pérdida de conexión (navigator.onLine)');
+      setConnectionStatus('disconnected');
+      
+      // 🔥 IMPORTANTE: Guardar info de llamada terminada para notificar al backend cuando se reconecte
+      if (callId) {
+        const pendingEndCall = {
+          callId,
+          contactId,
+          duration: Math.floor((Date.now() - callStartTime) / 1000),
+          timestamp: Date.now()
+        };
+        localStorage.setItem('pending_call_end', JSON.stringify(pendingEndCall));
+        console.log('💾 Guardada info de llamada terminada para notificar al reconectar:', pendingEndCall);
+        
+        // 🔥 Intentar emitir inmediatamente (se encolará si no hay conexión)
+        try {
+          socketService.emitCallEndByConnection(callId, contactId);
+          console.log('📤 Intento de notificación de desconexión enviado');
+        } catch (error) {
+          console.log('⚠️ No se pudo emitir ahora, se notificará al reconectar');
+        }
+      }
+      
+      // Limpiar el iframe
+      if (callFrameRef.current) {
+        callFrameRef.current.innerHTML = '';
+      }
+      
+      // Calcular duración
+      const duration = Math.floor((Date.now() - callStartTime) / 1000);
+      
+      // Cerrar después de un breve momento
+      setTimeout(() => {
+        onCallEnd(duration, 'connection_lost');
+      }, 1000);
+    };
+
+    // Handler cuando el navegador detecta que se perdió la conexión
+    const handleOffline = () => {
+      console.log('🌐❌ navigator.onLine: OFFLINE detectado');
+      
+      // Mostrar overlay de reconexión inmediatamente
+      if (connectionStatus !== 'reconnecting' && connectionStatus !== 'disconnected') {
+        setConnectionStatus('reconnecting');
+        setReconnectAttempt(1);
+      }
+      
+      // Iniciar timer para cerrar la llamada si no se recupera
+      if (!offlineTimeoutRef.current) {
+        console.log(`⏱️ Iniciando timer de ${(disconnectDelay + maxReconnectTime) / 1000}s para cierre automático`);
+        offlineTimeoutRef.current = setTimeout(() => {
+          console.log('⏱️ Tiempo agotado (navigator.onLine), cerrando llamada...');
+          forceEndCall();
+        }, disconnectDelay + maxReconnectTime); // 5s + 20s = 25s total
+      }
+    };
+
+    // Handler cuando el navegador detecta que se recuperó la conexión
+    const handleOnline = () => {
+      console.log('🌐✅ navigator.onLine: ONLINE detectado');
+      
+      // Limpiar timer
+      if (offlineTimeoutRef.current) {
+        clearTimeout(offlineTimeoutRef.current);
+        offlineTimeoutRef.current = null;
+      }
+      
+      // Si la llamada ya terminó, NO cambiar el estado (dejar que se cierre)
+      if (hasEndedRef.current) {
+        console.log('📞 La llamada ya terminó, no reconectar');
+        return;
+      }
+      
+      // Si no ha terminado la llamada, volver a conectado
+      setConnectionStatus('connected');
+      setReconnectAttempt(0);
+    };
+
+    // Agregar listeners
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+
+    // Si ya está offline al montar, iniciar el proceso
+    if (!navigator.onLine) {
+      console.log('🌐⚠️ Iniciando en estado OFFLINE');
+      handleOffline();
+    }
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+      if (offlineTimeoutRef.current) {
+        clearTimeout(offlineTimeoutRef.current);
+        offlineTimeoutRef.current = null;
+      }
+    };
+  }, [callStartTime, onCallEnd, connectionStatus, disconnectDelay, maxReconnectTime]);
+
+  // 🔥 useEffect para manejar reconexión de Socket durante la llamada (MEJORADO)
   useEffect(() => {
     const socket = socketService.getSocket();
     
@@ -149,24 +265,94 @@ export const CallWindow: React.FC<CallWindowProps> = ({
     }
 
     console.log('🔌 Configurando listeners de reconexión para la llamada...');
+    console.log(`⏱️ Delay antes de mostrar reconectando: ${disconnectDelay/1000}s`);
+    console.log(`⏱️ Tiempo máximo de reconexión: ${maxReconnectTime/1000}s`);
 
-    // Función para iniciar el timeout de reconexión
+    // 🔥 Función para finalizar la llamada por problemas de conexión
+    const endCallDueToConnection = () => {
+      if (hasEndedRef.current) return; // Evitar llamar múltiples veces
+      hasEndedRef.current = true;
+      
+      console.log('⏱️ Tiempo de reconexión agotado. Finalizando llamada por problemas de conexión...');
+      setConnectionStatus('disconnected');
+      
+      // 🔥 Guardar en localStorage que esta llamada terminó por conexión
+      // Esto permite que si la página se recarga, no intente reconectar a una llamada terminada
+      if (callId) {
+        localStorage.setItem(`call_ended_${callId}`, 'connection_lost');
+        localStorage.setItem('last_call_ended_by_connection', JSON.stringify({
+          callId,
+          contactId,
+          timestamp: Date.now()
+        }));
+      }
+      
+      // Intentar notificar al otro usuario (puede fallar si no hay conexión, pero el backend lo manejará)
+      if (callId) {
+        try {
+          socketService.emitCallEndByConnection(callId, contactId);
+          console.log('📤 Notificación de desconexión enviada al otro usuario');
+        } catch (error) {
+          console.error('❌ Error al notificar desconexión (esperado si no hay conexión):', error);
+        }
+      }
+      
+      // 🔥 IMPORTANTE: Cerrar la llamada INMEDIATAMENTE sin esperar al socket
+      // Limpiar el iframe para detener la videollamada
+      if (callFrameRef.current) {
+        callFrameRef.current.innerHTML = '';
+      }
+      
+      // Calcular duración y terminar la llamada
+      const duration = Math.floor((Date.now() - callStartTime) / 1000);
+      
+      // Dar un breve momento para mostrar el estado "disconnected" y luego cerrar
+      setTimeout(() => {
+        onCallEnd(duration, 'connection_lost');
+      }, 1500);
+    };
+
+    // Función para iniciar el timeout de reconexión (después del delay inicial)
     const startReconnectTimeout = () => {
       // Limpiar timeout anterior si existe
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
       
-      // Iniciar nuevo timeout
+      // Iniciar timeout de reconexión máxima
       reconnectTimeoutRef.current = setTimeout(() => {
-        console.log('⏱️ Tiempo de reconexión agotado (30s). Finalizando llamada...');
-        setConnectionStatus('disconnected');
-        // Dar tiempo para mostrar el mensaje de desconexión
-        setTimeout(() => {
-          const duration = Math.floor((Date.now() - callStartTime) / 1000);
-          onCallEnd(duration);
-        }, 2000);
+        endCallDueToConnection();
       }, maxReconnectTime);
+    };
+
+    // 🔥 Función para iniciar el delay antes de mostrar el overlay
+    const startDisconnectDelay = () => {
+      // Limpiar delay anterior si existe
+      if (disconnectDelayRef.current) {
+        clearTimeout(disconnectDelayRef.current);
+      }
+      
+      console.log(`⏳ Esperando ${disconnectDelay/1000}s antes de mostrar reconectando...`);
+      
+      // Esperar el delay antes de mostrar el overlay de reconexión
+      disconnectDelayRef.current = setTimeout(() => {
+        console.log('📡 Mostrando overlay de reconexión...');
+        setConnectionStatus('reconnecting');
+        setReconnectAttempt(1);
+        startReconnectTimeout();
+      }, disconnectDelay);
+    };
+
+    // 🔥 Limpiar todos los timeouts
+    const clearAllTimeouts = () => {
+      if (disconnectDelayRef.current) {
+        clearTimeout(disconnectDelayRef.current);
+        disconnectDelayRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
     };
 
     // Handler para desconexión
@@ -178,27 +364,38 @@ export const CallWindow: React.FC<CallWindowProps> = ({
         return;
       }
       
-      setConnectionStatus('reconnecting');
-      setReconnectAttempt(1);
-      startReconnectTimeout();
+      // 🔥 Iniciar el delay de 15 segundos antes de mostrar overlay
+      startDisconnectDelay();
     };
 
     // Handler para intentos de reconexión
     const handleReconnectAttempt = (attempt: number) => {
       console.log(`📞🔄 Llamada: Intento de reconexión #${attempt}`);
-      setConnectionStatus('reconnecting');
-      setReconnectAttempt(attempt);
+      // Solo actualizar el contador si ya se está mostrando el overlay
+      if (connectionStatus === 'reconnecting') {
+        setReconnectAttempt(attempt);
+      }
     };
 
     // Handler para reconexión exitosa
     const handleReconnect = (attempt: number) => {
       console.log(`📞✅ Llamada: Reconectado después de ${attempt} intentos`);
       
-      // Limpiar el timeout de reconexión
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      // 🔥 Verificar si la llamada ya debería haber terminado
+      if (hasEndedRef.current) {
+        console.log('📞⚠️ La llamada ya terminó, ignorando reconexión');
+        return;
       }
+      
+      // Verificar en localStorage si esta llamada fue marcada como terminada
+      if (callId && localStorage.getItem(`call_ended_${callId}`)) {
+        console.log('📞⚠️ La llamada fue terminada por desconexión, no reconectar');
+        localStorage.removeItem(`call_ended_${callId}`);
+        return;
+      }
+      
+      // 🔥 Limpiar todos los timeouts
+      clearAllTimeouts();
       
       setConnectionStatus('connected');
       setReconnectAttempt(0);
@@ -208,11 +405,21 @@ export const CallWindow: React.FC<CallWindowProps> = ({
     const handleConnect = () => {
       console.log('📞✅ Llamada: Socket conectado');
       
-      // Limpiar el timeout de reconexión
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      // 🔥 Verificar si la llamada ya debería haber terminado
+      if (hasEndedRef.current) {
+        console.log('📞⚠️ La llamada ya terminó, ignorando conexión');
+        return;
       }
+      
+      // Verificar en localStorage si esta llamada fue marcada como terminada
+      if (callId && localStorage.getItem(`call_ended_${callId}`)) {
+        console.log('📞⚠️ La llamada fue terminada por desconexión, no reconectar');
+        localStorage.removeItem(`call_ended_${callId}`);
+        return;
+      }
+      
+      // 🔥 Limpiar todos los timeouts
+      clearAllTimeouts();
       
       setConnectionStatus('connected');
       setReconnectAttempt(0);
@@ -221,10 +428,9 @@ export const CallWindow: React.FC<CallWindowProps> = ({
     // Handler para error de conexión
     const handleConnectError = (error: Error) => {
       console.error('📞❌ Llamada: Error de conexión -', error.message);
-      setConnectionStatus('reconnecting');
-      if (reconnectAttempt === 0) {
-        setReconnectAttempt(1);
-        startReconnectTimeout();
+      // Solo iniciar el proceso si no está ya en reconexión
+      if (connectionStatus !== 'reconnecting' && !disconnectDelayRef.current) {
+        startDisconnectDelay();
       }
     };
 
@@ -244,15 +450,15 @@ export const CallWindow: React.FC<CallWindowProps> = ({
       socket.off('connect', handleConnect);
       socket.off('connect_error', handleConnectError);
       
-      // Limpiar timeout si existe
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
+      // 🔥 Limpiar todos los timeouts
+      clearAllTimeouts();
     };
-  }, [callStartTime, onCallEnd, reconnectAttempt]);
+  }, [callStartTime, onCallEnd, reconnectAttempt, connectionStatus, callId, contactId]);
 
   const handleEndCall = () => {
+    if (hasEndedRef.current) return; // Evitar llamar múltiples veces
+    hasEndedRef.current = true;
+    
     const duration = Math.floor((Date.now() - callStartTime) / 1000);
 
     console.log('════════════════════════════════════════');
@@ -264,7 +470,7 @@ export const CallWindow: React.FC<CallWindowProps> = ({
       callFrameRef.current.innerHTML = '';
     }
 
-    onCallEnd(duration);
+    onCallEnd(duration, 'normal');
   };
 
   const handleManualHangup = () => {
@@ -322,7 +528,7 @@ export const CallWindow: React.FC<CallWindowProps> = ({
       <ConnectionStatusOverlay
         status={connectionStatus}
         isVisible={connectionStatus !== 'connected'}
-        timeoutSeconds={30}
+        timeoutSeconds={maxReconnectTime / 1000}
         reconnectAttempt={reconnectAttempt}
       />
 

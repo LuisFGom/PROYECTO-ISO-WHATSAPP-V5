@@ -95,6 +95,17 @@ export const useCallNotification = () => {
     setActiveCall(null);
   }, []);
 
+  // 🔥 NUEVO: Handler cuando la llamada termina por problemas de conexión del otro usuario
+  const handleCallEndedByConnection = useCallback((data: { callId: number; endedBy: number; reason: string }) => {
+    console.log('📵 Llamada finalizada por problemas de conexión:', data);
+    
+    // Cerrar la ventana de llamada
+    setActiveCall(null);
+    
+    // Mostrar mensaje al usuario
+    alert('📵 Llamada finalizada por problemas de conexión del otro participante');
+  }, []);
+
   // ✅ Aceptar llamada entrante
   const acceptCall = useCallback(async () => {
     if (!incomingCall) return;
@@ -271,6 +282,7 @@ export const useCallNotification = () => {
     socketService.onCallAnswered(handleCallAnswered);
     socketService.onCallRejected(handleCallRejected);
     socketService.onCallEnded(handleCallEnded);
+    socketService.onCallEndedByConnection(handleCallEndedByConnection); // 🔥 NUEVO
 
     // Listeners para llamadas grupales
     socketService.onGroupCallIncoming(handleIncomingGroupCall);
@@ -284,6 +296,7 @@ export const useCallNotification = () => {
         socket.off('call:answered', handleCallAnswered);
         socket.off('call:rejected', handleCallRejected);
         socket.off('call:ended', handleCallEnded);
+        socket.off('call:ended-by-connection', handleCallEndedByConnection); // 🔥 NUEVO
         socket.off('group:call-incoming', handleIncomingGroupCall);
       }
     };
@@ -292,7 +305,8 @@ export const useCallNotification = () => {
     handleIncomingGroupCall, 
     handleCallAnswered, 
     handleCallRejected, 
-    handleCallEnded
+    handleCallEnded,
+    handleCallEndedByConnection // 🔥 NUEVO
   ]);
 
   return {

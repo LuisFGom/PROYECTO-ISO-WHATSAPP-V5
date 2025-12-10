@@ -322,12 +322,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
-  // 🔥 NUEVO: Finalizar llamada activa
-  const handleEndActiveCall = async () => {
+  // 🔥 NUEVO: Finalizar llamada activa (con soporte para reason)
+  const handleEndActiveCall = async (duration?: number, reason?: 'normal' | 'connection_lost') => {
     if (!activeCall) return;
-    const duration = Math.floor((Date.now() - activeCall.startTime) / 1000);
+    
+    // Si la llamada terminó por problemas de conexión, solo cerrar localmente
+    if (reason === 'connection_lost') {
+      console.log('📵 Llamada terminada por problemas de conexión');
+      await endCall();
+      return;
+    }
+    
     await endCall();
-    console.log(`📴 Llamada finalizada. Duración: ${duration}s`);
+    console.log(`📴 Llamada finalizada. Duración: ${duration || 0}s`);
   };
 const handleOpenMenu = (messageId: number, messageIndex: number) => {
     const isLastMessage = messageIndex === messages.length - 1;
@@ -445,6 +452,8 @@ const handleOpenMenu = (messageId: number, messageIndex: number) => {
         callType={activeCall.callType}
         isGroupCall={false}
         displayName={user.username}
+        callId={activeCall.callId}
+        contactId={contactId}
         onCallEnd={handleEndActiveCall}
       />
     );

@@ -343,12 +343,19 @@ export const GroupChatWindow: React.FC<GroupChatWindowProps> = ({
     }
   };
 
-  // 🔥 NUEVO: Finalizar llamada grupal activa
-  const handleEndActiveCall = async () => {
+  // 🔥 NUEVO: Finalizar llamada grupal activa (con soporte para reason)
+  const handleEndActiveCall = async (duration?: number, reason?: 'normal' | 'connection_lost') => {
     if (!activeCall) return;
-    const duration = Math.floor((Date.now() - activeCall.startTime) / 1000);
+    
+    // Si la llamada terminó por problemas de conexión, solo cerrar localmente
+    if (reason === 'connection_lost') {
+      console.log('📵 Llamada grupal terminada por problemas de conexión');
+      await endCall();
+      return;
+    }
+    
     await endCall();
-    console.log(`📴 Llamada grupal finalizada. Duración: ${duration}s`);
+    console.log(`📴 Llamada grupal finalizada. Duración: ${duration || 0}s`);
   };
 
   // 🔥 NUEVO: Obtener nombre del miembro que llama
@@ -502,6 +509,7 @@ const handleOpenMenu = (messageId: number, messageIndex: number) => {
         callType={activeCall.callType}
         isGroupCall={true}
         displayName={user.username}
+        callId={activeCall.callId}
         onCallEnd={handleEndActiveCall}
       />
     );

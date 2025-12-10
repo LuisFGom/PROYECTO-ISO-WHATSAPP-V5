@@ -11,9 +11,19 @@ import { GroupRepository } from '../repositories/group.repository';
 import { database } from '../database/mysql/connection';
 import { UserStatus } from '../../shared/types/user.types';
 
+// Tipo para rastrear llamadas activas
+interface ActiveCall {
+  callId: number;
+  callerId: number;
+  receiverId: number;
+  startTime: Date;
+}
+
 export class SocketService {
   private io: Server;
   private connectedUsers: Map<number, string> = new Map();
+  // 🔥 NUEVO: Map para rastrear llamadas activas por ID de usuario
+  private activeCalls: Map<number, ActiveCall> = new Map();
   private chatService: ChatService;
   private groupService: GroupService;
   private userRepository: MySQLUserRepository;
@@ -717,6 +727,18 @@ export class SocketService {
 
           if (rows.length > 0) {
             const callerId = rows[0].caller_id;
+            
+            // 🔥 NUEVO: Registrar la llamada como activa para ambos usuarios
+            const activeCallInfo: ActiveCall = {
+              callId: data.callId,
+              callerId: callerId,
+              receiverId: userId,
+              startTime: new Date()
+            };
+            this.activeCalls.set(userId, activeCallInfo);
+            this.activeCalls.set(callerId, activeCallInfo);
+            console.log(`📞 Llamada ${data.callId} registrada como activa para usuarios ${callerId} y ${userId}`);
+            
             const callerSocketId = this.connectedUsers.get(callerId);
             
             if (callerSocketId) {
@@ -803,6 +825,11 @@ export class SocketService {
             const otherUserId = caller_id === userId ? receiver_id : caller_id;
             const otherSocketId = this.connectedUsers.get(otherUserId);
             
+            // 🔥 NUEVO: Eliminar la llamada del registro de llamadas activas
+            this.activeCalls.delete(userId);
+            this.activeCalls.delete(otherUserId);
+            console.log(`🔴 Llamada ${data.callId} eliminada del registro de llamadas activas`);
+            
             if (otherSocketId) {
               this.io.to(otherSocketId).emit('call:ended', {
                 callId: data.callId,
@@ -816,6 +843,93 @@ export class SocketService {
         } catch (error: any) {
           console.error('❌ Error al finalizar llamada:', error);
           callback({ success: false, error: error.message });
+        }
+      });
+
+      // 🔥 NUEVO: Llamada 1-a-1: Terminar por problemas de conexión
+      socket.on('call:end-by-connection', async (data: {
+        callId: number;
+        contactId?: number;
+        reason: string;
+      }) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            console.error('❌ Usuario no autenticado para call:end-by-connection');
+            return;
+          }
+
+          console.log(`📵 Llamada ${data.callId} finalizada por problemas de conexión del usuario ${userId}`);
+
+          // Actualizar la llamada en la base de datos
+          await database.getPool().query(
+            `UPDATE calls SET status = 'ended', ended_at = NOW() WHERE id = ?`,
+            [data.callId]
+          );
+
+          // Obtener información de la llamada para notificar al otro usuario
+          const [rows]: any = await database.getPool().query(
+            `SELECT caller_id, receiver_id FROM calls WHERE id = ?`,
+            [data.callId]
+          );
+
+          if (rows.length > 0) {
+            const { caller_id, receiver_id } = rows[0];
+            const otherUserId = caller_id === userId ? receiver_id : caller_id;
+            const otherSocketId = this.connectedUsers.get(otherUserId);
+            
+            // 🔥 NUEVO: Eliminar la llamada del registro de llamadas activas
+            this.activeCalls.delete(userId);
+            this.activeCalls.delete(otherUserId);
+            console.log(`🔴 Llamada ${data.callId} eliminada del registro de llamadas activas`);
+            
+            if (otherSocketId) {
+              // Notificar al otro usuario que la llamada terminó por problemas de conexión
+              this.io.to(otherSocketId).emit('call:ended-by-connection', {
+                callId: data.callId,
+                endedBy: userId,
+                reason: 'connection_lost'
+              });
+              console.log(`📤 Notificación de desconexión enviada al usuario ${otherUserId}`);
+            }
+
+            // Enviar mensaje de sistema al chat (si tenemos el contactId)
+            const contactId = data.contactId || otherUserId;
+            if (contactId) {
+              try {
+                // 🔥 CORREGIDO: Insertar mensaje NORMAL en la conversación
+                const [insertResult]: any = await database.getPool().query(
+                  `INSERT INTO messages (sender_id, receiver_id, content, timestamp, is_read, deleted_by_sender, deleted_by_receiver, is_deleted_for_all) 
+                   VALUES (?, ?, ?, NOW(), 0, 0, 0, 0)`,
+                  [userId, contactId, '📵 Llamada finalizada por problemas de conexión']
+                );
+                console.log(`💬 Mensaje guardado en chat entre ${userId} y ${contactId}, ID: ${insertResult.insertId}`);
+                
+                // Notificar a ambos usuarios del nuevo mensaje
+                const systemMessage = {
+                  id: insertResult.insertId,
+                  senderId: userId,
+                  receiverId: contactId,
+                  content: '📵 Llamada finalizada por problemas de conexión',
+                  timestamp: new Date().toISOString()
+                };
+
+                // Notificar al otro usuario
+                if (otherSocketId) {
+                  this.io.to(otherSocketId).emit('chat:new-message', systemMessage);
+                }
+                
+                // Notificar al usuario actual (cuando se reconecte)
+                socket.emit('chat:new-message', systemMessage);
+              } catch (msgError) {
+                console.error('❌ Error al enviar mensaje:', msgError);
+              }
+            }
+          }
+
+        } catch (error: any) {
+          console.error('❌ Error en call:end-by-connection:', error);
         }
       });
 
@@ -939,6 +1053,71 @@ export class SocketService {
         }
         
         if (disconnectedUserId) {
+          // 🔥 NUEVO: Verificar si el usuario tenía una llamada activa
+          const activeCall = this.activeCalls.get(disconnectedUserId);
+          if (activeCall) {
+            console.log(`📵 Usuario ${disconnectedUserId} se desconectó durante llamada activa ${activeCall.callId}`);
+            
+            // Determinar el otro usuario
+            const otherUserId = activeCall.callerId === disconnectedUserId 
+              ? activeCall.receiverId 
+              : activeCall.callerId;
+            
+            // Calcular duración de la llamada
+            const duration = Math.floor((new Date().getTime() - activeCall.startTime.getTime()) / 1000);
+            
+            let messageId: number | null = null;
+            
+            try {
+              // Actualizar la llamada en la base de datos
+              await database.getPool().query(
+                `UPDATE calls SET status = 'ended', ended_at = NOW(), duration = ? WHERE id = ?`,
+                [duration, activeCall.callId]
+              );
+              console.log(`✅ Llamada ${activeCall.callId} actualizada en BD con duración ${duration}s`);
+              
+              // 🔥 CORREGIDO: Insertar mensaje NORMAL en la conversación (sin is_system_message que puede no existir)
+              // El mensaje aparecerá como enviado por el usuario que se desconectó
+              const [insertResult]: any = await database.getPool().query(
+                `INSERT INTO messages (sender_id, receiver_id, content, timestamp, is_read, deleted_by_sender, deleted_by_receiver, is_deleted_for_all) 
+                 VALUES (?, ?, ?, NOW(), 0, 0, 0, 0)`,
+                [disconnectedUserId, otherUserId, '📵 Llamada finalizada por problemas de conexión']
+              );
+              messageId = insertResult.insertId;
+              console.log(`💬 Mensaje guardado en chat entre ${disconnectedUserId} y ${otherUserId}, ID: ${messageId}`);
+              
+            } catch (dbError) {
+              console.error('❌ Error al actualizar BD por desconexión en llamada:', dbError);
+            }
+            
+            // Eliminar la llamada del registro de ambos usuarios
+            this.activeCalls.delete(disconnectedUserId);
+            this.activeCalls.delete(otherUserId);
+            
+            // Notificar al otro usuario que la llamada terminó
+            const otherSocketId = this.connectedUsers.get(otherUserId);
+            if (otherSocketId) {
+              this.io.to(otherSocketId).emit('call:ended-by-connection', {
+                callId: activeCall.callId,
+                endedBy: disconnectedUserId,
+                reason: 'connection_lost'
+              });
+              
+              // 🔥 CORREGIDO: Enviar mensaje como mensaje normal (no de sistema)
+              const chatMessage = {
+                id: messageId,
+                senderId: disconnectedUserId,
+                receiverId: otherUserId,
+                content: '📵 Llamada finalizada por problemas de conexión',
+                timestamp: new Date().toISOString(),
+                is_read: false
+              };
+              this.io.to(otherSocketId).emit('chat:new-message', chatMessage);
+              
+              console.log(`📤 Notificación de fin de llamada enviada al usuario ${otherUserId}`);
+            }
+          }
+          
           try {
             await this.userRepository.updateStatus(disconnectedUserId, UserStatus.OFFLINE);
             await this.userRepository.updateLastSeen(disconnectedUserId);

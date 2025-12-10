@@ -122,12 +122,22 @@ export const HomePage = () => {
     }
   };
 
-  // 🔥 NUEVO: Manejar fin de llamada
-  const handleCallEnd = async () => {
+  // 🔥 NUEVO: Manejar fin de llamada (con soporte para reason)
+  const handleCallEnd = async (duration?: number, reason?: 'normal' | 'connection_lost') => {
     if (!activeCall) return;
-    const duration = Math.floor((Date.now() - activeCall.startTime) / 1000);
+    
+    // Si la llamada terminó por problemas de conexión, solo cerrar localmente
+    // El backend ya notificó al otro usuario
+    if (reason === 'connection_lost') {
+      console.log('📵 Llamada terminada por problemas de conexión');
+      // Solo cerrar el estado local, no intentar emitir socket events
+      await endCall();
+      return;
+    }
+    
+    // Llamada normal, terminar normalmente
     await endCall();
-    console.log(`📴 Llamada finalizada. Duración: ${duration}s`);
+    console.log(`📴 Llamada finalizada. Duración: ${duration || 0}s`);
   };
 
   useEffect(() => {
@@ -447,6 +457,8 @@ const handleConversationClick = (conversation: Conversation) => {
         callType={activeCall.callType}
         isGroupCall={activeCall.isGroupCall}
         displayName={user?.username || 'Usuario'}
+        callId={activeCall.callId}
+        contactId={selectedContactId || undefined}
         onCallEnd={handleCallEnd}
       />
     );

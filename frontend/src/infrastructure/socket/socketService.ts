@@ -111,7 +111,44 @@ class SocketService {
 
     this.socket.on('reconnect', (attempt) => {
       console.log(`✅ Reconectado después de ${attempt} intentos`);
+      
+      // 🔥 NUEVO: Verificar si hay una llamada pendiente de notificar
+      this.checkPendingCallEnd();
     });
+    
+    // 🔥 NUEVO: También verificar en connect por si el socket se reconecta de otra forma
+    this.socket.on('connect', () => {
+      console.log('✅ Socket conectado');
+      
+      // Verificar llamadas pendientes después de un breve delay para asegurar autenticación
+      setTimeout(() => {
+        this.checkPendingCallEnd();
+      }, 1000);
+    });
+  }
+  
+  // 🔥 NUEVO: Verificar y notificar llamadas que terminaron por desconexión
+  private checkPendingCallEnd() {
+    const pendingCallStr = localStorage.getItem('pending_call_end');
+    if (pendingCallStr) {
+      try {
+        const pendingCall = JSON.parse(pendingCallStr);
+        
+        // Solo procesar si es reciente (menos de 5 minutos)
+        if (Date.now() - pendingCall.timestamp < 5 * 60 * 1000) {
+          console.log('📤 Notificando llamada que terminó por desconexión:', pendingCall);
+          
+          // Emitir evento al backend
+          this.emitCallEndByConnection(pendingCall.callId, pendingCall.contactId);
+        }
+        
+        // Limpiar de localStorage
+        localStorage.removeItem('pending_call_end');
+      } catch (error) {
+        console.error('❌ Error al procesar llamada pendiente:', error);
+        localStorage.removeItem('pending_call_end');
+      }
+    }
   }
 
   disconnect() {
@@ -615,6 +652,27 @@ class SocketService {
         }
       );
     });
+  }
+
+  // 🔥 NUEVO: Llamada 1-a-1: Terminar por problemas de conexión
+  emitCallEndByConnection(callId: number, contactId?: number): void {
+    if (!this.socket) {
+      console.error('❌ Socket no conectado para enviar notificación de desconexión');
+      return;
+    }
+
+    console.log(`📤 Emitiendo call:end-by-connection para callId=${callId}, contactId=${contactId}`);
+    
+    this.socket.emit('call:end-by-connection', { 
+      callId, 
+      contactId,
+      reason: 'connection_lost'
+    });
+  }
+
+  // 🔥 NUEVO: Listener para cuando la llamada termina por problemas de conexión del otro usuario
+  onCallEndedByConnection(callback: (data: { callId: number; endedBy: number; reason: string }) => void): void {
+    this.socket?.on('call:ended-by-connection', callback);
   }
 
   // 📞 Listeners de llamadas 1-a-1
