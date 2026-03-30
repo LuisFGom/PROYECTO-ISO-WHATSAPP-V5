@@ -7,7 +7,11 @@
     "dev": "nodemon",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "db:migrate": "ts-node src/infrastructure/database/migrations/migrate.ts",
+    "db:rollback": "ts-node src/infrastructure/database/migrations/migrate.ts rollback",
+    "db:reset": "npm run db:rollback && npm run db:migrate",
+    "setup": "npm install && npm run db:migrate"
   },
   "keywords": [
     "whatsapp",

@@ -1,0 +1,331 @@
+
+	>> PASOS A REALIZAR PARA EL FUNCIONAMIENTO DEL PROYECTO <<
+
+
+REQUISITOS:
+
+-> VISUAL STUDIO CODE (EL CELESTE)
+
+-> MYSQL
+
+-> CUENTA EN DAILY.CO (LA CUENTA DEBE SER DE DAILY VIDEO)
+
+-> NGROK
+
+-> AUDIO DE 10 SEGUNDOS PARA CUANDO LLAMAN 
+
+
+----------------------------------------------------------
+
+-----> PASO 1.- TRAS LA CLONACION DEL REPOSITORIO SE REALIZARA LA INSTALACION DE DEPENDENCIAS 
+
+-> Navegar a la carpeta Backend (la ruta a seguir dependera de la o las carpetas dentro de la cual se encuentre el proyecto.
+
+-> Una vez en la ruta backend ejecutar el comando:
+
+	npm install
+
+-> Con la ejecucion del comando mencionado se instalaran todas las dependencias necesarias para el proyecto automaticamente.
+
+-> Una vez completada la instalacion dentro de otra terminal nos dirigimos a la carpeta Frontend, de igual manera la ruta varia dependiendo de donde se encuentra ubicado el proyecto.
+
+-> Ya estando dentro de la carpeta ejecutamos el mismo comando:
+
+	npm install 
+
+-> Cuando se complete la instalacion habremos terminado con el primer paso.
+
+----------------------------------------------------------
+
+-----> PASO 2.- CREACION DE LA BASE DE DATOS DENTRO DE MYSQL 
+
+PARA ESTE PASO EXISTEN DOS OPCIONES 
+
+ -> LA PRIMERA ES MIGRAR DESDE VISUAL LA BASE A MYSQL         
+    CONFIGURANDO LA CONTRASEÑA EN LA CLASE .ENV    
+    (RECOMENDADA)
+
+ -> LA SEGUNDA ES EJECUTAR EL SCRIPT DE LA BASE DENTRO DE 
+    MYSQL 
+
+
+-----> CONFIGURACION PARA LA CREACIÓN DE LA BASE DE DATOS EN MYSQL USANDO LA MIGRACION
+
+
+# 1. Backend
+
+cd backend
+
+cp .env.example .env    -> Para tener un respaldo de la  
+			   clase .env
+
+# Editar .env y poner la contraseña de MySQL
+
+En la linea 9 donde dice DB_PASSWORD poner la contraseña que se tenga en mysql y ejecutar el siguiente comando dentro de la carpeta Backend.
+
+npm run db:migrate
+
+
+-----> SCRIPT PARA LA CREACION DE LA BASE DE DATOS DENTRO DE MYSQL 
+
+
+CREATE DATABASE IF NOT EXISTS whatsapp_db;
+USE whatsapp_db;
+
+-- 1. Tabla de Usuarios
+CREATE TABLE `users` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `username` varchar(50) NOT NULL,
+  `email` varchar(100) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `avatar_url` varchar(255) DEFAULT NULL,
+  `status` enum('online','offline','away') DEFAULT 'offline',
+  `about` varchar(255) DEFAULT 'Hey there! I am using WhatsApp Clone',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `last_seen` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY (`username`),
+  UNIQUE KEY (`email`),
+  KEY (`status`)
+) ENGINE=InnoDB;
+
+-- 2. Tabla de Grupos (Usando comillas invertidas por ser palabra reservada)
+CREATE TABLE `groups` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `avatar_url` varchar(255) DEFAULT NULL,
+  `admin_user_id` int NOT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY (`admin_user_id`)
+) ENGINE=InnoDB;
+
+-- 3. Tabla de Contactos
+CREATE TABLE `contacts` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `contact_user_id` int NOT NULL,
+  `nickname` varchar(100) NOT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY (`user_id`),
+  KEY (`contact_user_id`)
+) ENGINE=InnoDB;
+
+-- 4. Tabla de Mensajes (Chat Individual)
+CREATE TABLE `messages` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `sender_id` int NOT NULL,
+  `receiver_id` int NOT NULL,
+  `encrypted_content` text NOT NULL,
+  `iv` varchar(32) NOT NULL,
+  `timestamp` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `is_read` tinyint(1) DEFAULT '0',
+  `deleted_by_sender` tinyint(1) DEFAULT '0',
+  `deleted_by_receiver` tinyint(1) DEFAULT '0',
+  `edited_at` timestamp NULL DEFAULT NULL,
+  `is_deleted_for_all` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY (`sender_id`),
+  KEY (`receiver_id`),
+  KEY (`timestamp`)
+) ENGINE=InnoDB;
+
+-- 5. Tabla de Conversaciones (Resumen para la lista de chats)
+CREATE TABLE `conversations` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user1_id` int NOT NULL,
+  `user2_id` int NOT NULL,
+  `last_message_id` int DEFAULT NULL,
+  `last_message_at` timestamp NULL DEFAULT NULL,
+  `unread_count_user1` int DEFAULT '0',
+  `unread_count_user2` int DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY (`user1_id`),
+  KEY (`user2_id`),
+  KEY (`last_message_id`)
+) ENGINE=InnoDB;
+
+-- 6. Tabla de Mensajes de Grupo
+CREATE TABLE `group_messages` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `group_id` int NOT NULL,
+  `sender_id` int NOT NULL,
+  `encrypted_content` text NOT NULL,
+  `iv` varchar(32) NOT NULL,
+  `timestamp` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `edited_at` timestamp NULL DEFAULT NULL,
+  `is_deleted_for_all` tinyint(1) DEFAULT '0',
+  `deleted_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY (`group_id`),
+  KEY (`sender_id`),
+  KEY (`is_deleted_for_all`)
+) ENGINE=InnoDB;
+
+-- 7. Miembros de Grupo
+CREATE TABLE `group_members` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `group_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `joined_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `left_at` timestamp NULL DEFAULT NULL,
+  `added_by_user_id` int DEFAULT NULL,
+  `is_admin` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY (`group_id`),
+  KEY (`user_id`),
+  KEY (`added_by_user_id`)
+) ENGINE=InnoDB;
+
+-- 8. Llamadas Individuales
+CREATE TABLE `calls` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `caller_id` int NOT NULL,
+  `receiver_id` int NOT NULL,
+  `call_type` enum('audio','video') NOT NULL DEFAULT 'video',
+  `status` enum('missed','answered','rejected','ended') NOT NULL DEFAULT 'missed',
+  `started_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `ended_at` timestamp NULL DEFAULT NULL,
+  `duration` int DEFAULT '0',
+  `room_name` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY (`caller_id`),
+  KEY (`receiver_id`),
+  KEY (`started_at`)
+) ENGINE=InnoDB;
+
+-- 9. Llamadas de Grupo
+CREATE TABLE `group_calls` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `group_id` int NOT NULL,
+  `started_by_user_id` int NOT NULL,
+  `call_type` enum('audio','video') NOT NULL DEFAULT 'video',
+  `started_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `ended_at` timestamp NULL DEFAULT NULL,
+  `duration` int DEFAULT '0',
+  `room_name` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY (`group_id`),
+  KEY (`started_by_user_id`),
+  KEY (`started_at`)
+) ENGINE=InnoDB;
+
+-- 10. Participantes de Llamadas de Grupo
+CREATE TABLE `group_call_participants` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `group_call_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `joined_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `left_at` timestamp NULL DEFAULT NULL,
+  `duration` int DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY (`group_call_id`),
+  KEY (`user_id`)
+) ENGINE=InnoDB;
+
+-- 11. Lectura de Mensajes en Grupo
+CREATE TABLE `group_message_reads` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `group_message_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `read_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY (`group_message_id`),
+  KEY (`user_id`)
+) ENGINE=InnoDB;
+
+-- 12. Mensajes de Grupo eliminados para un usuario específico
+CREATE TABLE `group_messages_deleted_for_user` (
+  `user_id` int NOT NULL,
+  `message_id` int NOT NULL,
+  `deleted_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`,`message_id`)
+) ENGINE=InnoDB;
+
+-- 13. Grupos ocultos para el usuario
+CREATE TABLE `groups_hidden_for_user` (
+  `group_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `hidden_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`group_id`,`user_id`)
+) ENGINE=InnoDB;
+
+-- 14. Indicadores de "Escribiendo..." (Individual)
+CREATE TABLE `typing_indicators` (
+  `user_id` int NOT NULL,
+  `chat_with_user_id` int NOT NULL,
+  `is_typing` tinyint(1) DEFAULT '0',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`,`chat_with_user_id`)
+) ENGINE=InnoDB;
+
+-- 15. Indicadores de "Escribiendo..." (Grupo)
+CREATE TABLE `group_typing_indicators` (
+  `group_id` int NOT NULL,
+  `user_id` int NOT NULL,
+  `is_typing` tinyint(1) DEFAULT '0',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`group_id`,`user_id`)
+) ENGINE=InnoDB;
+
+
+----------------------------------------------------------
+
+-----> PASO 3.- INSTALACION Y CONFIGURACION DE NGROK
+
+Ngrok permite que dispositivos de la misma o diferente red se puedan conectar a la pagina web del proyecto es decir al frontend para realizar pruebas o testear el proyecto.
+
+1.- CREACION DE UNA CUENTA EN NRGOK 
+
+Dirigirse a ngrok.com y registrarse.
+
+Una vez dentro del panel principal (dashboard) buscar en la parte izquierda "Your Authtoken" e ingresar.
+
+Copiar el codigo largo es decir el token que aparece.
+
+2.- INSTALACION DE NGROK
+
+La mejor opcion para este paso es realizar la instalacion en la microsoft store solo buscar ngrok e instalar.
+
+3.- CONFIGURACION DEL AUTHTOKEN 
+
+En un comand promt (CMD) ejecutar:
+
+	ngrok --version     -> Verificar que se encuentre instalado
+
+	ngrok config add-authtoken TU_AUTHTOKEN_AQUI
+
+Reemplazar el token por el copia en la cuenta creada.
+
+Con todos los pasos anteriores completados esta LISTO para usarlo en el proyecto.
+
+Para usarlo solo se debe ejecutar:
+
+	ngrok http numero_de_puerto
+
+----------------------------------------------------------
+
+
+-----> CONFIGURACION EN EL NAVEGADOR (CHROME)
+
+
+Permitir que la dirección muestre contenido inseguro.
+
+-> chrome://settings/content/insecureContent
+
+	Dentro agregar la direccion ejemplo (http://10.79.11.206:5173/)
+
+-> chrome://flags/
+
+	Dentro buscar insecure origins teated as secure
+
+	Agregar la direccion por ejemplo (http://10.79.11.206:5173/)
+
+-> CUANDO LO SOLICITE PERMITIR LOS PERMISOS PARA CAMARA Y VIDEO (normalemente cuando se realiza por primera vez una videollamada en la pagina web)

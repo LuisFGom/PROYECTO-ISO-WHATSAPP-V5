@@ -1,5 +1,5 @@
 // frontend/src/presentation/hooks/useCallNotification.ts - CORREGIDO ✅
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { socketService } from '../../infrastructure/socket/socketService';
 
 export interface IncomingCall {
@@ -25,6 +25,11 @@ export interface ActiveCall {
 export const useCallNotification = () => {
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  
+  // 🔥 NUEVO: Prevenir llamadas duplicadas
+  const isStartingCallRef = useRef<boolean>(false);
+  const processedCallIdsRef = useRef<Set<number>>(new Set());
+  const lastIncomingCallIdRef = useRef<number | null>(null);
 
   // 📞 Handler para llamada 1-a-1 entrante
   const handleIncomingCall = useCallback((data: { 
@@ -34,6 +39,22 @@ export const useCallNotification = () => {
     callType: 'audio' | 'video' 
   }) => {
     console.log('📞 Llamada entrante 1-a-1:', data);
+    
+    // 🔥 NUEVO: Ignorar si ya procesamos esta llamada
+    if (processedCallIdsRef.current.has(data.callId)) {
+      console.log('⚠️ Llamada duplicada ignorada, callId:', data.callId);
+      return;
+    }
+    
+    // 🔥 NUEVO: Ignorar si ya hay una llamada entrante del mismo callId
+    if (lastIncomingCallIdRef.current === data.callId) {
+      console.log('⚠️ Llamada duplicada del mismo callId ignorada:', data.callId);
+      return;
+    }
+    
+    // Marcar como procesada
+    processedCallIdsRef.current.add(data.callId);
+    lastIncomingCallIdRef.current = data.callId;
     
     // ✅ CRÍTICO: Guardar el roomName que viene del servidor
     setIncomingCall({
@@ -56,6 +77,22 @@ export const useCallNotification = () => {
     callType: 'audio' | 'video' 
   }) => {
     console.log('📞 Llamada grupal entrante:', data);
+    
+    // 🔥 NUEVO: Ignorar si ya procesamos esta llamada
+    if (processedCallIdsRef.current.has(data.callId)) {
+      console.log('⚠️ Llamada grupal duplicada ignorada, callId:', data.callId);
+      return;
+    }
+    
+    // 🔥 NUEVO: Ignorar si ya hay una llamada entrante del mismo callId
+    if (lastIncomingCallIdRef.current === data.callId) {
+      console.log('⚠️ Llamada grupal duplicada del mismo callId ignorada:', data.callId);
+      return;
+    }
+    
+    // Marcar como procesada
+    processedCallIdsRef.current.add(data.callId);
+    lastIncomingCallIdRef.current = data.callId;
     
     // ✅ CRÍTICO: Guardar el roomName que viene del servidor
     setIncomingCall({
@@ -81,6 +118,10 @@ export const useCallNotification = () => {
   const handleCallRejected = useCallback((data: { callId: number; rejectedBy: number }) => {
     console.log('🚫 Llamada rechazada:', data);
     
+    // 🔥 NUEVO: Limpiar referencias
+    lastIncomingCallIdRef.current = null;
+    isStartingCallRef.current = false;
+    
     // Cerrar la ventana de llamada si estaba abierta
     setActiveCall(null);
     
@@ -91,16 +132,30 @@ export const useCallNotification = () => {
   const handleCallEnded = useCallback((data: { callId: number; endedBy: number }) => {
     console.log('📴 Llamada finalizada por el otro usuario:', data);
     
+    // 🔥 NUEVO: Limpiar referencias
+    lastIncomingCallIdRef.current = null;
+    isStartingCallRef.current = false;
+    
     // Cerrar la ventana de llamada
     setActiveCall(null);
+    
+    // 🔥 NUEVO: También limpiar llamada entrante si existe con este callId
+    setIncomingCall(prev => prev?.callId === data.callId ? null : prev);
   }, []);
 
   // 🔥 NUEVO: Handler cuando la llamada termina por problemas de conexión del otro usuario
   const handleCallEndedByConnection = useCallback((data: { callId: number; endedBy: number; reason: string }) => {
     console.log('📵 Llamada finalizada por problemas de conexión:', data);
     
+    // 🔥 NUEVO: Limpiar referencias
+    lastIncomingCallIdRef.current = null;
+    isStartingCallRef.current = false;
+    
     // Cerrar la ventana de llamada
     setActiveCall(null);
+    
+    // 🔥 NUEVO: También limpiar llamada entrante si existe
+    setIncomingCall(prev => prev?.callId === data.callId ? null : prev);
     
     // Mostrar mensaje al usuario
     alert('📵 Llamada finalizada por problemas de conexión del otro participante');
@@ -109,6 +164,9 @@ export const useCallNotification = () => {
   // ✅ Aceptar llamada entrante
   const acceptCall = useCallback(async () => {
     if (!incomingCall) return;
+    
+    // 🔥 NUEVO: Limpiar referencia para permitir nuevas llamadas
+    lastIncomingCallIdRef.current = null;
 
     try {
       if (incomingCall.isGroupCall) {
@@ -142,6 +200,9 @@ export const useCallNotification = () => {
   // ❌ Rechazar llamada entrante
   const rejectCall = useCallback(async () => {
     if (!incomingCall) return;
+    
+    // 🔥 NUEVO: Limpiar referencia para permitir nuevas llamadas
+    lastIncomingCallIdRef.current = null;
 
     try {
       if (!incomingCall.isGroupCall) {
@@ -201,11 +262,26 @@ export const useCallNotification = () => {
     receiverId: number, 
     callType: 'audio' | 'video'
   ): Promise<boolean> => {
+    // 🔥 NUEVO: Prevenir doble clic
+    if (isStartingCallRef.current) {
+      console.log('⚠️ Ya hay una llamada iniciándose, ignorando doble clic');
+      return false;
+    }
+    
+    // 🔥 NUEVO: No iniciar si ya hay una llamada activa
+    if (activeCall) {
+      console.log('⚠️ Ya hay una llamada activa, no se puede iniciar otra');
+      return false;
+    }
+    
+    isStartingCallRef.current = true;
+    
     try {
       // ✅ MEJORADO: Validar que socket esté conectado
       if (!socketService.isConnected) {
         console.error('❌ Socket no está conectado');
         alert('No hay conexión con el servidor. Intenta de nuevo.');
+        isStartingCallRef.current = false;
         return false;
       }
 
@@ -227,24 +303,48 @@ export const useCallNotification = () => {
       });
 
       console.log(`📞 Llamada ${callType} iniciada con ${receiverId}, callId: ${callId}, roomName: ${roomName}`);
+      
+      // 🔥 Marcar callId como procesado para evitar duplicados
+      processedCallIdsRef.current.add(callId);
+      
       return true;
     } catch (error) {
       console.error('❌ Error al iniciar llamada:', error);
       alert('Error al iniciar la llamada');
       return false;
+    } finally {
+      // 🔥 NUEVO: Liberar el bloqueo después de un breve delay
+      setTimeout(() => {
+        isStartingCallRef.current = false;
+      }, 1000);
     }
-  }, []);
+  }, [activeCall]);
 
   // 📞 Iniciar llamada grupal
   const startGroupCall = useCallback(async (
     groupId: number, 
     callType: 'audio' | 'video'
   ): Promise<boolean> => {
+    // 🔥 NUEVO: Prevenir doble clic
+    if (isStartingCallRef.current) {
+      console.log('⚠️ Ya hay una llamada grupal iniciándose, ignorando doble clic');
+      return false;
+    }
+    
+    // 🔥 NUEVO: No iniciar si ya hay una llamada activa
+    if (activeCall) {
+      console.log('⚠️ Ya hay una llamada activa, no se puede iniciar otra');
+      return false;
+    }
+    
+    isStartingCallRef.current = true;
+    
     try {
       // ✅ MEJORADO: Validar que socket esté conectado
       if (!socketService.isConnected) {
         console.error('❌ Socket no está conectado');
         alert('No hay conexión con el servidor. Intenta de nuevo.');
+        isStartingCallRef.current = false;
         return false;
       }
 
@@ -265,13 +365,22 @@ export const useCallNotification = () => {
       });
 
       console.log(`📞 Llamada grupal ${callType} iniciada en grupo ${groupId}, roomName: ${roomName}`);
+      
+      // 🔥 Marcar callId como procesado para evitar duplicados
+      processedCallIdsRef.current.add(callId);
+      
       return true;
     } catch (error) {
       console.error('❌ Error al iniciar llamada grupal:', error);
       alert('Error al iniciar la llamada grupal');
       return false;
+    } finally {
+      // 🔥 NUEVO: Liberar el bloqueo después de un breve delay
+      setTimeout(() => {
+        isStartingCallRef.current = false;
+      }, 1000);
     }
-  }, []);
+  }, [activeCall]);
 
   // 🎧 Registrar listeners de Socket.IO
   useEffect(() => {
